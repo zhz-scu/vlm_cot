@@ -15,17 +15,55 @@ except ImportError:
     from transformers import AutoModelForCausalLM
     Qwen2_5_VLForConditionalGeneration = None
     HAS_NATIVE_QWEN25_VL = False
-from qwen_vl_utils import process_vision_info
+# 修复导入问题
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+try:
+    from src.core.qwen_vl_utils import process_vision_info
+except ImportError:
+    try:
+        from core.qwen_vl_utils import process_vision_info
+    except ImportError:
+        print("警告: 无法导入qwen_vl_utils，使用简化版本")
+        def process_vision_info(messages):
+            image_inputs = []
+            video_inputs = []
+            for msg in messages:
+                for content in msg.get("content", []):
+                    if content.get("type") == "image":
+                        image_inputs.append(content["image"])
+                    elif content.get("type") == "video":
+                        video_inputs.append(content["video"])
+            return image_inputs, video_inputs
+
+try:
+    from src.core.npu_utils import auto_select_device, auto_select_dtype, move_to_device
+except ImportError:
+    try:
+        from core.npu_utils import auto_select_device, auto_select_dtype, move_to_device
+    except ImportError:
+        print("警告: 无法导入npu_utils，使用内置版本")
+        # 使用内置的设备选择函数
 
 
 def auto_select_device(device_arg: str) -> str:
-    """自动选择最佳可用设备"""
+    """自动选择最佳可用设备 - 支持NPU"""
     if device_arg != "auto":
         return device_arg
+    
+    # 检查 NPU (华为昇腾)
+    if hasattr(torch, 'npu') and torch.npu.is_available():
+        return "npu"
     
     # 检查 CUDA
     if torch.cuda.is_available():
         return "cuda"
+    
+    # 检查 XPU (Intel GPU)
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        return "xpu"
     
     # 检查 MPS (Mac)
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -42,15 +80,21 @@ def auto_select_device(device_arg: str) -> str:
 
 
 def auto_select_dtype(device: str, dtype_arg: str):
-    """自动选择最佳数据类型"""
+    """自动选择最佳数据类型 - 支持NPU"""
     if dtype_arg != "auto":
         mapping = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
         return mapping[dtype_arg]
     
-    if device == "cuda":
+    if device == "npu":
+        # NPU 推荐使用 float16 以获得最佳性能
+        return torch.float16
+    elif device == "cuda":
         return torch.bfloat16
     elif device == "mps":
         # MPS 推荐使用 float16 以获得最佳性能
+        return torch.float16
+    elif device == "xpu":
+        # XPU 推荐使用 float16
         return torch.float16
     return torch.float32
 
@@ -88,8 +132,8 @@ def build_messages(image_inputs: List[str], question: str, cot_style: str) -> Li
 
 
 def move_to_device(inputs: dict, device: str) -> dict:
-    """将输入张量移动到指定设备"""
-    if device not in ("cuda", "mps"):
+    """将输入张量移动到指定设备 - 支持NPU"""
+    if device not in ("cuda", "mps", "npu", "xpu"):
         return inputs
     
     moved = {}

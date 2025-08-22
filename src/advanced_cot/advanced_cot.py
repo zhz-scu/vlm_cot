@@ -17,7 +17,37 @@ except ImportError:
     from transformers import AutoModelForCausalLM
     Qwen2_5_VLForConditionalGeneration = None
     HAS_NATIVE_QWEN25_VL = False
-from qwen_vl_utils import process_vision_info
+# 修复导入问题
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+try:
+    from src.core.qwen_vl_utils import process_vision_info
+except ImportError:
+    try:
+        from core.qwen_vl_utils import process_vision_info
+    except ImportError:
+        print("警告: 无法导入qwen_vl_utils，使用简化版本")
+        def process_vision_info(messages):
+            image_inputs = []
+            video_inputs = []
+            for msg in messages:
+                for content in msg.get("content", []):
+                    if content.get("type") == "image":
+                        image_inputs.append(content["image"])
+                    elif content.get("type") == "video":
+                        video_inputs.append(content["video"])
+            return image_inputs, video_inputs
+
+try:
+    from src.core.npu_utils import auto_select_device, auto_select_dtype, move_to_device
+except ImportError:
+    try:
+        from core.npu_utils import auto_select_device, auto_select_dtype, move_to_device
+    except ImportError:
+        print("警告: 无法导入npu_utils，使用内置版本")
+        # 使用内置的设备选择函数
 
 
 @dataclass
@@ -272,16 +302,28 @@ def advanced_generate(
 ) -> Dict:
     """高级生成函数 - 集成多种高新技术"""
     
-    # 设备选择
+    # 设备选择 - 支持NPU
     if device == "auto":
-        if torch.cuda.is_available():
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            device = "npu"
+        elif torch.cuda.is_available():
             device = "cuda"
+        elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            device = "xpu"
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device = "mps"
         else:
             device = "cpu"
     
-    torch_dtype = torch.float16 if device == "mps" else torch.float32
+    # 数据类型选择 - 支持NPU
+    if device == "npu":
+        torch_dtype = torch.float16  # NPU推荐使用FP16
+    elif device == "mps":
+        torch_dtype = torch.float16
+    elif device == "xpu":
+        torch_dtype = torch.float16
+    else:
+        torch_dtype = torch.float32
     
     if seed is not None:
         torch.manual_seed(seed)
@@ -350,7 +392,7 @@ def advanced_generate(
             return_tensors="pt",
         )
         
-        if device in ("cuda", "mps"):
+        if device in ("cuda", "mps", "npu", "xpu"):
             inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
         
         generated_ids = model.generate(

@@ -15,7 +15,8 @@ except ImportError:
     from transformers import AutoModelForCausalLM
     Qwen2_5_VLForConditionalGeneration = None
     HAS_NATIVE_QWEN25_VL = False
-from qwen_vl_utils import process_vision_info
+from ..core.qwen_vl_utils import process_vision_info
+from ..core.npu_utils import auto_select_device, auto_select_dtype, move_to_device
 
 
 class EnhancedMCOTEngine:
@@ -206,16 +207,28 @@ def enhanced_mcot_generate(
 ) -> Dict:
     """增强MCOT生成函数"""
     
-    # 设备选择
+    # 设备选择 - 支持NPU
     if device == "auto":
-        if torch.cuda.is_available():
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            device = "npu"
+        elif torch.cuda.is_available():
             device = "cuda"
+        elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            device = "xpu"
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device = "mps"
         else:
             device = "cpu"
     
-    torch_dtype = torch.float16 if device == "mps" else torch.float32
+    # 数据类型选择 - 支持NPU
+    if device == "npu":
+        torch_dtype = torch.float16  # NPU推荐使用FP16
+    elif device == "mps":
+        torch_dtype = torch.float16
+    elif device == "xpu":
+        torch_dtype = torch.float16
+    else:
+        torch_dtype = torch.float32
     
     if seed is not None:
         torch.manual_seed(seed)
