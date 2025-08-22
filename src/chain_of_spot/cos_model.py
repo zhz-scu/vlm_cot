@@ -142,6 +142,10 @@ class ImageCropper:
         width, height = image.size
         x0, y0, x1, y1 = bbox.to_coordinates(width, height)
         
+        # 确保坐标顺序正确
+        x0, x1 = min(x0, x1), max(x0, x1)
+        y0, y1 = min(y0, y1), max(y0, y1)
+        
         # 扩展边界框
         expand_w = int((x1 - x0) * expand_ratio)
         expand_h = int((y1 - y0) * expand_ratio)
@@ -150,6 +154,18 @@ class ImageCropper:
         y0 = max(0, y0 - expand_h)
         x1 = min(width, x1 + expand_w)
         y1 = min(height, y1 + expand_h)
+        
+        # 最终检查坐标有效性
+        if x0 >= x1 or y0 >= y1:
+            print(f"警告: 无效的裁剪坐标 x0={x0}, y0={y0}, x1={x1}, y1={y1}")
+            # 使用默认的中心区域
+            center_x = width // 2
+            center_y = height // 2
+            size = min(width, height) // 4
+            x0 = max(0, center_x - size)
+            y0 = max(0, center_y - size)
+            x1 = min(width, center_x + size)
+            y1 = min(height, center_y + size)
         
         return image.crop((x0, y0, x1, y1))
     
@@ -162,6 +178,16 @@ class ImageCropper:
         
         img_width, img_height = image.size
         x0, y0, x1, y1 = bbox.to_coordinates(img_width, img_height)
+        
+        # 确保坐标顺序正确
+        x0, x1 = min(x0, x1), max(x0, x1)
+        y0, y1 = min(y0, y1), max(y0, y1)
+        
+        # 确保坐标在图像范围内
+        x0 = max(0, min(x0, img_width))
+        y0 = max(0, min(y0, img_height))
+        x1 = max(0, min(x1, img_width))
+        y1 = max(0, min(y1, img_height))
         
         draw.rectangle([x0, y0, x1, y1], outline=color, width=width)
         return viz_image
@@ -194,13 +220,23 @@ class ChainOfSpotModel:
         )
     
     def _auto_select_device(self, device: str) -> str:
-        """自动选择设备"""
+        """自动选择设备 - 支持NPU"""
         if device != "auto":
             return device
-        if torch.cuda.is_available():
+        
+        # 检测NPU (华为昇腾)
+        if hasattr(torch, 'npu') and torch.npu.is_available():
+            return "npu"
+        # 检测CUDA
+        elif torch.cuda.is_available():
             return "cuda"
+        # 检测MPS (Apple Silicon)
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
+        # 检测XPU (Intel GPU)
+        elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            return "xpu"
+        # 默认CPU
         return "cpu"
     
     def _format_instruction_1(self, question: str) -> str:
@@ -318,8 +354,8 @@ class ChainOfSpotModel:
             
             inputs = self.processor(**processor_kwargs)
             
-            # 移动到设备
-            if self.device in ("cuda", "mps"):
+            # 移动到设备 - 支持NPU
+            if self.device in ("cuda", "mps", "npu", "xpu"):
                 inputs = {k: v.to(self.device) if hasattr(v, "to") else v 
                          for k, v in inputs.items()}
             

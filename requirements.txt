@@ -1,3 +1,4 @@
+# 基础依赖
 torch>=2.2.0
 transformers>=4.44.2
 accelerate>=0.33.0
@@ -8,3 +9,16 @@ qwen-vl-utils>=0.0.8
 requests>=2.31.0
 numpy>=1.26.4
 torchvision>=0.20.0
+
+# NPU支持 (可选)
+# torch_npu>=2.2.0  # 华为昇腾NPU支持，需要单独安装
+
+# 性能优化
+opencv-python>=4.8.0  # 图像处理优化
+matplotlib>=3.7.0     # 可视化支持
+seaborn>=0.12.0       # 统计可视化
+
+# 开发工具
+pytest>=7.4.0         # 测试框架
+black>=23.0.0         # 代码格式化
+flake8>=6.0.0         # 代码检查

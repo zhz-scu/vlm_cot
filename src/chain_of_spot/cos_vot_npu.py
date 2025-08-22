@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Chain-of-Spot + VoT 混合方法: 可视化交互式推理
+Chain-of-Spot + VoT 混合方法 - NPU专用版本
 
-创新点：
-1. 结合CoS的ROI定位和VoT的可视化推理
-2. 在ROI定位过程中加入空间可视化
-3. 多步骤ROI细化与可视化验证
-4. 动态ROI调整机制
+专门为华为昇腾NPU优化的版本，包含：
+1. NPU设备检测和配置
+2. NPU特定的模型加载
+3. NPU内存优化
+4. NPU性能调优
 """
 
 import torch
@@ -17,6 +17,17 @@ from dataclasses import dataclass
 from PIL import Image, ImageDraw, ImageFont
 import re
 import json
+import argparse
+import sys
+import time
+
+# NPU相关导入
+try:
+    import torch_npu
+    HAS_NPU = True
+except ImportError:
+    HAS_NPU = False
+    print("警告: 未安装torch_npu，无法使用NPU功能")
 
 from cos_model import ChainOfSpotModel, BoundingBox, CoSResponse
 
@@ -26,9 +37,9 @@ class VisualROI:
     """可视化ROI结构"""
     bbox: BoundingBox
     confidence: float
-    visualization: str  # 文本形式的可视化
-    reasoning: str     # 推理过程
-    step_id: int       # 步骤ID
+    visualization: str
+    reasoning: str
+    step_id: int
 
 
 @dataclass
@@ -36,10 +47,57 @@ class CoSVoTResponse:
     """CoS+VoT混合响应"""
     final_roi: BoundingBox
     final_answer: str
-    visual_trajectory: List[VisualROI]  # 可视化轨迹
+    visual_trajectory: List[VisualROI]
     reasoning_trace: List[str]
     confidence: float
-    spatial_visualization: str  # 最终的空间可视化
+    spatial_visualization: str
+
+
+class NPUOptimizer:
+    """NPU优化器"""
+    
+    @staticmethod
+    def setup_npu_environment():
+        """设置NPU环境"""
+        if not HAS_NPU:
+            raise RuntimeError("NPU环境未配置，请安装torch_npu")
+        
+        # 设置NPU环境变量
+        import os
+        os.environ['ASCEND_DEVICE_ID'] = '0'  # 使用第一个NPU设备
+        os.environ['ASCEND_VISIBLE_DEVICES'] = '0'
+        
+        # 初始化NPU
+        torch.npu.set_device(0)
+        print("NPU环境初始化完成")
+    
+    @staticmethod
+    def optimize_for_npu(model, device="npu"):
+        """为NPU优化模型"""
+        if device != "npu":
+            return model
+        
+        # 启用NPU优化
+        model = model.to(device)
+        
+        # 设置NPU特定的优化选项
+        if hasattr(model, 'half'):
+            model = model.half()  # 使用FP16
+        
+        # 启用NPU图优化
+        try:
+            model = torch.npu.optimize(model)
+            print("NPU图优化已启用")
+        except:
+            print("NPU图优化不可用，使用标准模式")
+        
+        return model
+    
+    @staticmethod
+    def clear_npu_cache():
+        """清理NPU缓存"""
+        if HAS_NPU:
+            torch.npu.empty_cache()
 
 
 class SpatialVisualizer:
@@ -61,7 +119,6 @@ class SpatialVisualizer:
         for y in range(self.grid_size):
             row = []
             for x in range(self.grid_size):
-                # 归一化坐标
                 norm_x = x / self.grid_size
                 norm_y = y / self.grid_size
                 
@@ -74,7 +131,6 @@ class SpatialVisualizer:
                     row.append(self.grid_chars['empty'])
             grid.append(''.join(row))
         
-        # 添加边界和标签
         result = f"空间可视化 - {target_desc}:\n"
         result += "┌" + "─" * self.grid_size + "┐\n"
         for row in grid:
@@ -93,11 +149,10 @@ class SpatialVisualizer:
                 norm_x = x / self.grid_size
                 norm_y = y / self.grid_size
                 
-                # 检查是否在任何ROI内
                 in_roi = False
                 for i, roi in enumerate(rois):
                     if roi.bbox.x0 <= norm_x <= roi.bbox.x1 and roi.bbox.y0 <= norm_y <= roi.bbox.y1:
-                        row.append(str(i + 1))  # 使用数字标识不同ROI
+                        row.append(str(i + 1))
                         in_roi = True
                         break
                 
@@ -111,21 +166,25 @@ class SpatialVisualizer:
             result += "│" + row + "│\n"
         result += "└" + "─" * self.grid_size + "┘\n"
         
-        # 添加图例
         for i, roi in enumerate(rois):
             result += f"ROI{i+1}: 置信度={roi.confidence:.2f}, 步骤={roi.step_id}\n"
         
         return result
 
 
-class CoSVoTModel(ChainOfSpotModel):
-    """Chain-of-Spot + VoT 混合模型"""
+class CoSVoTNPUModel(ChainOfSpotModel):
+    """CoS+VoT NPU优化模型"""
     
-    def __init__(self, base_model, processor, device: str = "auto"):
+    def __init__(self, base_model, processor, device: str = "npu"):
         super().__init__(base_model, processor, device)
         self.spatial_visualizer = SpatialVisualizer()
+        self.npu_optimizer = NPUOptimizer()
         
-        # 改进的指令模板
+        # NPU优化
+        if device == "npu":
+            self.base_model = self.npu_optimizer.optimize_for_npu(self.base_model, device)
+        
+        # 指令模板
         self.vot_instruction_1 = (
             "<Img> To answer the question: <Q>, "
             "please identify the region of interest and provide a spatial visualization. "
@@ -160,23 +219,20 @@ class CoSVoTModel(ChainOfSpotModel):
     
     def _multi_step_roi_refinement(self, image: Image.Image, question: str, 
                                  max_steps: int = 3) -> List[VisualROI]:
-        """多步骤ROI细化"""
+        """多步骤ROI细化 - NPU优化版本"""
         visual_rois = []
-        current_bbox = None
         
         for step in range(max_steps):
-            # 构建当前步骤的指令
+            # 构建指令
             if step == 0:
                 instruction = self.vot_instruction_1.replace("<Q>", question)
             else:
-                # 基于前一步结果进行细化
                 prev_roi = visual_rois[-1]
                 instruction = (
                     f"<Img> Previous ROI: {prev_roi.bbox.to_string()} "
                     f"Confidence: {prev_roi.confidence:.2f}\n"
                     f"Question: {question}\n"
-                    "Please refine the ROI based on the previous result. "
-                    "Provide updated coordinates and visualization."
+                    f"Please refine the ROI based on the previous result."
                 )
             
             # 调用模型
@@ -186,7 +242,6 @@ class CoSVoTModel(ChainOfSpotModel):
             bbox, visualization = self._extract_coords_and_visualization(response)
             
             if bbox is None:
-                # 使用启发式方法
                 bbox = self._heuristic_roi_extraction(image, question)
                 visualization = self.spatial_visualizer.create_spatial_grid(bbox, f"步骤{step+1}")
             
@@ -203,30 +258,30 @@ class CoSVoTModel(ChainOfSpotModel):
             )
             
             visual_rois.append(visual_roi)
-            current_bbox = bbox
             
             # 如果置信度足够高，提前停止
             if confidence > 0.8:
                 break
+            
+            # NPU缓存清理
+            if self.device == "npu":
+                self.npu_optimizer.clear_npu_cache()
         
         return visual_rois
     
     def _calculate_step_confidence(self, response: str, bbox: BoundingBox, step: int) -> float:
         """计算步骤置信度"""
-        confidence = 0.5  # 基础置信度
+        confidence = 0.5
         
-        # 基于响应质量
         if "COORDS:" in response and "VISUAL:" in response:
             confidence += 0.2
         
-        # 基于ROI大小
         roi_area = (bbox.x1 - bbox.x0) * (bbox.y1 - bbox.y0)
         if 0.1 <= roi_area <= 0.5:
             confidence += 0.1
         elif roi_area < 0.1:
             confidence -= 0.1
         
-        # 基于步骤数（越后面的步骤越可信）
         confidence += step * 0.05
         
         return min(confidence, 1.0)
@@ -236,7 +291,6 @@ class CoSVoTModel(ChainOfSpotModel):
         if not visual_rois:
             return BoundingBox(x0=0.25, x1=0.75, y0=0.25, y1=0.75)
         
-        # 基于置信度加权平均
         total_weight = 0
         weighted_x0 = 0
         weighted_x1 = 0
@@ -244,7 +298,7 @@ class CoSVoTModel(ChainOfSpotModel):
         weighted_y1 = 0
         
         for roi in visual_rois:
-            weight = roi.confidence ** 2  # 平方权重
+            weight = roi.confidence ** 2
             total_weight += weight
             
             weighted_x0 += roi.bbox.x0 * weight
@@ -265,10 +319,9 @@ class CoSVoTModel(ChainOfSpotModel):
         return final_bbox
     
     def visual_interactive_reasoning(self, image: Image.Image, question: str) -> CoSVoTResponse:
-        """
-        可视化交互式推理 - 主要方法
-        """
+        """可视化交互式推理 - NPU优化版本"""
         reasoning_trace = []
+        start_time = time.time()
         
         # 步骤1: 多步骤ROI细化
         reasoning_trace.append("开始多步骤ROI细化...")
@@ -293,8 +346,11 @@ class CoSVoTModel(ChainOfSpotModel):
         # 步骤5: 生成最终空间可视化
         spatial_viz = self.spatial_visualizer.create_multi_roi_visualization(visual_rois)
         
-        # 计算最终置信度
+        # 计算最终置信度和时间
         final_confidence = np.mean([roi.confidence for roi in visual_rois])
+        total_time = time.time() - start_time
+        
+        reasoning_trace.append(f"总耗时: {total_time:.2f}秒")
         
         return CoSVoTResponse(
             final_roi=final_roi,
@@ -306,56 +362,51 @@ class CoSVoTModel(ChainOfSpotModel):
         )
 
 
-def cos_vot_generate(
+def cos_vot_npu_generate(
     model_id: str,
     image_path: str,
     question: str,
-    device: str = "auto",
-    dtype_str: str = "auto",
+    device: str = "npu",
+    dtype_str: str = "fp16",
     max_new_tokens: int = 512,
     max_roi_steps: int = 3,
     seed: int = None,
     save_visualization: bool = False,
     output_dir: str = ".",
 ) -> Dict[str, Any]:
-    """
-    CoS+VoT混合方法生成函数
-    """
+    """CoS+VoT NPU生成函数"""
+    
+    # NPU环境检查
+    if device == "npu" and not HAS_NPU:
+        raise RuntimeError("NPU环境未配置，请安装torch_npu")
+    
     if seed is not None:
         torch.manual_seed(seed)
     
-    # 加载模型 - 支持NPU
-    if device == "auto":
-        if hasattr(torch, 'npu') and torch.npu.is_available():
-            device = "npu"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
+    # NPU环境设置
+    if device == "npu":
+        NPUOptimizer.setup_npu_environment()
     
-    # 数据类型选择 - 支持NPU
+    # 数据类型选择
     if dtype_str == "auto":
         if device == "npu":
-            torch_dtype = torch.float16  # NPU通常使用FP16
-        elif device == "mps":
             torch_dtype = torch.float16
         else:
             torch_dtype = torch.float32
     else:
         dtype_mapping = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
-        torch_dtype = dtype_mapping.get(dtype_str, torch.float32)
+        torch_dtype = dtype_mapping.get(dtype_str, torch.float16)
     
+    # 加载模型
     try:
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
         
-        # NPU特定的加载配置
         if device == "npu":
             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_id, 
                 torch_dtype=torch_dtype,
-                device_map=None  # NPU需要手动管理设备映射
+                device_map=None
             )
-            # 手动移动到NPU
             model = model.to("npu")
         else:
             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -381,8 +432,8 @@ def cos_vot_generate(
         
         processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
     
-    # 初始化混合模型
-    cos_vot_model = CoSVoTModel(model, processor, device)
+    # 初始化NPU优化模型
+    cos_vot_model = CoSVoTNPUModel(model, processor, device)
     
     # 加载图像
     image = Image.open(image_path).convert("RGB")
@@ -392,19 +443,18 @@ def cos_vot_generate(
     
     # 保存可视化结果
     if save_visualization:
-        # 创建可视化图像
         viz_image = cos_vot_model.image_cropper.visualize_roi(image, response.final_roi)
-        viz_path = f"{output_dir}/cos_vot_visualization.png"
+        viz_path = f"{output_dir}/cos_vot_npu_visualization.png"
         viz_image.save(viz_path)
         
-        # 保存空间可视化文本
-        viz_text_path = f"{output_dir}/spatial_visualization.txt"
+        viz_text_path = f"{output_dir}/spatial_visualization_npu.txt"
         with open(viz_text_path, 'w', encoding='utf-8') as f:
             f.write(response.spatial_visualization)
     
     # 构建返回结果
     result = {
-        "method": "CoS+VoT混合方法",
+        "method": "CoS+VoT NPU优化版本",
+        "device": device,
         "question": question,
         "image_path": image_path,
         "final_roi": response.final_roi.to_string(),
@@ -423,57 +473,70 @@ def cos_vot_generate(
         ],
         "reasoning_trace": response.reasoning_trace,
         "spatial_visualization": response.spatial_visualization,
-        "innovation_features": [
-            "多步骤ROI细化",
-            "空间可视化推理",
-            "动态ROI调整",
-            "置信度加权平均",
-            "可视化轨迹记录"
+        "npu_optimizations": [
+            "NPU图优化",
+            "FP16精度",
+            "内存管理",
+            "缓存清理"
         ]
     }
     
     return result
 
 
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="CoS+VoT混合方法测试")
+def parse_args() -> argparse.Namespace:
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description="CoS+VoT NPU优化版本")
     parser.add_argument("--image", required=True, help="输入图像路径")
     parser.add_argument("--question", required=True, help="问题")
-    parser.add_argument("--device", default="auto", help="设备")
-    parser.add_argument("--dtype", default="auto", help="数据类型")
+    parser.add_argument("--device", default="npu", choices=["npu", "cuda", "mps", "cpu"], help="设备")
+    parser.add_argument("--dtype", default="fp16", choices=["fp16", "fp32", "bf16"], help="数据类型")
     parser.add_argument("--max-roi-steps", type=int, default=3, help="最大ROI步骤数")
     parser.add_argument("--save-viz", action="store_true", help="保存可视化")
     
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main():
+    """主函数"""
+    args = parse_args()
     
-    result = cos_vot_generate(
-        model_id="Qwen/Qwen2.5-VL-3B-Instruct",
-        image_path=args.image,
-        question=args.question,
-        device=args.device,
-        dtype_str=args.dtype,
-        max_roi_steps=args.max_roi_steps,
-        save_visualization=args.save_viz
-    )
-    
-    print("=" * 80)
-    print("🔬 CoS+VoT 混合方法结果")
-    print("=" * 80)
-    print(f"问题: {result['question']}")
-    print(f"最终ROI: {result['final_roi']}")
-    print(f"置信度: {result['confidence']:.3f}")
-    print(f"ROI步骤数: {result['roi_steps']}")
-    print(f"最终答案: {result['final_answer']}")
-    
-    print("\n📊 可视化轨迹:")
-    for step in result['visual_trajectory']:
-        print(f"步骤{step['step']}: ROI={step['bbox']}, 置信度={step['confidence']:.3f}")
-    
-    print("\n🎨 空间可视化:")
-    print(result['spatial_visualization'])
-    
-    print("\n✨ 创新特性:")
-    for feature in result['innovation_features']:
-        print(f"- {feature}")
+    try:
+        result = cos_vot_npu_generate(
+            model_id="Qwen/Qwen2.5-VL-3B-Instruct",
+            image_path=args.image,
+            question=args.question,
+            device=args.device,
+            dtype_str=args.dtype,
+            max_roi_steps=args.max_roi_steps,
+            save_visualization=args.save_viz
+        )
+        
+        print("=" * 80)
+        print("🔬 CoS+VoT NPU优化版本结果")
+        print("=" * 80)
+        print(f"设备: {result['device']}")
+        print(f"问题: {result['question']}")
+        print(f"最终ROI: {result['final_roi']}")
+        print(f"置信度: {result['confidence']:.3f}")
+        print(f"ROI步骤数: {result['roi_steps']}")
+        print(f"最终答案: {result['final_answer']}")
+        
+        print("\n📊 可视化轨迹:")
+        for step in result['visual_trajectory']:
+            print(f"步骤{step['step']}: ROI={step['bbox']}, 置信度={step['confidence']:.3f}")
+        
+        print("\n🎨 空间可视化:")
+        print(result['spatial_visualization'])
+        
+        print("\n✨ NPU优化特性:")
+        for feature in result['npu_optimizations']:
+            print(f"- {feature}")
+        
+    except Exception as e:
+        print(f"错误: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
