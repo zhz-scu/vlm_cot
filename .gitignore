@@ -1,0 +1,171 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python字节码文件
+*.pyc
+*.pyo
+*.pyd
+
+# PyTorch & 模型文件
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+models/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+.spyderproject
+.spyproject
+.ropeproject
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.tmp
+*.temp
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# 项目特定文件
+# 模型和脚本目录
+scripts/models
+
+# 运行时生成的图像文件
+roi_visualization*.png
+roi_visualization.png
+roi_visualization_demo.png
+cos_vot_visualization.png
+spatial_visualization.txt
+
+# 临时和缓存文件
+temp/
+tmp/
+.tmp/
+*.tmp
+*.temp
+.cache/
+cache/
+*.cache
+
+# 日志文件
+*.log
+logs/
+log/
+
+# 输出文件
+output/
+outputs/
+results/
+*.output
+
+# 配置文件（包含敏感信息）
+config.ini
+secrets.json
+.env.local
+.env.production
+
+# 测试覆盖率
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+
+# 文档构建
+docs/_build/
+docs/build/
+
+# 备份文件
+*.bak
+*.backup
+*.old
+*.orig
+
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 其他
+*.swp
+*.swo
+*~
+
+# 保留的示例图像
+!test_simple.png
+!demo_complex_scene.png
