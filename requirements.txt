@@ -1,6 +1,6 @@
 # 基础依赖
 torch>=2.2.0
-transformers>=4.44.2
+transformers>=4.50.0,<4.51.0  # 支持qwen2_5_vl模型
 accelerate>=0.33.0
 safetensors>=0.4.4
 Pillow>=10.3.0

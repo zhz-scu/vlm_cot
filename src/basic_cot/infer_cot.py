@@ -150,22 +150,25 @@ def move_to_device(inputs: dict, device: str) -> dict:
 
 
 def load_model_and_processor(model_id: str, torch_dtype, device: str):
-    """加载模型和处理器，支持 MPS"""
+    """加载模型和处理器，支持 MPS - 修复PyTorch兼容性问题"""
     try:
         if HAS_NATIVE_QWEN25_VL and Qwen2_5_VLForConditionalGeneration is not None:
             # 使用原生支持
             model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 model_id,
                 torch_dtype=torch_dtype,
-                device_map="auto" if device in ("cuda", "mps") else None,
+                device_map="auto" if device in ("cuda", "mps", "npu", "xpu") else None,
+                low_cpu_mem_usage=True,  # 减少内存使用
+                trust_remote_code=True,
             )
-            processor = AutoProcessor.from_pretrained(model_id)
+            processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
         else:
             # 回退到远程代码实现
             model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 torch_dtype=torch_dtype,
-                device_map="auto" if device in ("cuda", "mps") else None,
+                device_map="auto" if device in ("cuda", "mps", "npu", "xpu") else None,
+                low_cpu_mem_usage=True,  # 减少内存使用
                 trust_remote_code=True,
             )
             processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
@@ -173,7 +176,21 @@ def load_model_and_processor(model_id: str, torch_dtype, device: str):
         return model, processor
     except Exception as e:
         print(f"模型加载失败: {e}", file=sys.stderr)
-        raise
+        # 尝试更保守的加载方式
+        try:
+            print("尝试保守加载方式...", file=sys.stderr)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch_dtype,
+                device_map=None,  # 不使用自动设备映射
+                low_cpu_mem_usage=False,  # 关闭内存优化
+                trust_remote_code=True,
+            )
+            processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+            return model, processor
+        except Exception as e2:
+            print(f"保守加载也失败: {e2}", file=sys.stderr)
+            raise
 
 
 def generate(
