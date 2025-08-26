@@ -7,16 +7,17 @@ Pillow>=10.3.0
 sentencepiece>=0.2.0
 qwen-vl-utils>=0.0.8
 requests>=2.31.0
-numpy>=1.26.4
-torchvision>=0.20.0
+numpy>=1.26.4,<2.0.0
+torchvision>=0.20.0,<0.24.0
 
 # NPU支持 (可选)
 # torch_npu>=2.2.0  # 华为昇腾NPU支持，需要单独安装
 
-# 性能优化
-opencv-python>=4.8.0  # 图像处理优化
+# 性能优化 / 视觉处理
+opencv-python>=4.11.0,<4.13.0  # 与ultralytics/torchvision兼容
 matplotlib>=3.7.0     # 可视化支持
 seaborn>=0.12.0       # 统计可视化
+ultralytics>=8.3.0    # YOLOv8 检测
 
 # 开发工具
 pytest>=7.4.0         # 测试框架
